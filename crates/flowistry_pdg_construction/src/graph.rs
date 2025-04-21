@@ -1,14 +1,14 @@
 //! The representation of the PDG.
 
 use std::{
-    fmt::{self},
-    hash::Hash,
-    path::Path,
+    collections::HashMap, fmt::{self}, hash::Hash, path::Path
 };
 
+use anyhow::Ok;
+pub use either::Either::{Left, Right};
 use flowistry_pdg::{CallString, GlobalLocation, RichLocation};
 use internment::Intern;
-use petgraph::{dot, graph::DiGraph};
+use petgraph::{data::FromElements, dot, graph::DiGraph};
 
 use rustc_hash::FxHashSet;
 use rustc_hir::def_id::DefId;
@@ -185,7 +185,7 @@ impl DepEdge {
 
 impl fmt::Display for DepEdge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}\n@ {}", self.kind, self.at)
+        write!(f, "{:?}\n@ {}\n{:?}->{:?}", self.kind, self.at, self.source_use, self.target_use)
     }
 }
 
@@ -248,6 +248,68 @@ impl<'tcx> HasLocalDecls<'tcx> for PartialGraph<'tcx> {
 }
 
 impl<'tcx> PartialGraph<'tcx> {
+    pub fn to_graph(&self) -> DiGraph<&DepNode<'tcx>, DepEdge> {
+        let mut g = DiGraph::new();
+        let mut idx_map = HashMap::new();
+        for n in &self.nodes {
+            idx_map.insert(n, g.add_node(n));
+        }
+        let err_str = "Node not in index map, edge cannot be added.";
+        for e in &self.edges {
+            for n in [&e.0, &e.1] {
+                if !idx_map.contains_key(n) {
+                    idx_map.insert(n, g.add_node(n));
+                }
+            }
+
+            g.add_edge(*idx_map.get(&e.0).expect(err_str), *idx_map.get(&e.1).expect(err_str), e.2);
+        }
+        g
+    }
+
+    pub fn generate_graphviz(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let g = self.to_graph();
+        let graph_dot = format!(
+            "{}",
+            dot::Dot::with_attr_getters(
+                &g,
+                &[],
+                &|_, _| "fontname=\"Courier New\"".to_string(),
+                &|_, (_, _)| "fontname=\"Courier New\",shape=box".to_string(),
+            )
+        );
+        rustc_utils::mir::body::run_dot(path.as_ref(), &graph_dot.into_bytes())
+    }
+    pub fn generate_rich_graphviz(&self, tcx: TyCtxt, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let g = self.to_graph();
+        let b = tcx.build_mir(self.def_id.expect_local());
+        let graph_dot = format!(
+            "{}",
+            dot::Dot::with_attr_getters(
+                &g,
+                &[],
+                &|_, _| "fontname=\"Courier New\"".to_string(),
+                &|_, (_, node)| 
+                    "label=\"".to_owned() +
+                    &node.at.iter().map(|loc| match loc.location {
+                        RichLocation::Location(l) => { 
+                            match b.stmt_at(l) {
+                            Left(stmt) => {format!("S: {:?}", stmt)},
+                            Right(term) => {format!("T: {:?}", term.kind)},
+                        }.replace("\"", "\\\"").replace("]", "\\]").replace("[", "\\[")
+                    
+                    },
+                    
+                        RichLocation::End => "End".to_string(),
+                        RichLocation::Start => "Start".to_string(),
+                        
+                    }).fold("".to_owned(), |acc, e| acc + e.as_str())
+                  + "\",fontname=\"Courier New\",shape=box",
+            )
+        );
+        rustc_utils::mir::body::run_dot(path.as_ref(), &graph_dot.into_bytes())
+    }
+
     pub fn mentioned_call_string<'a>(
         &'a self,
     ) -> impl Iterator<Item = CallString> + Captures<'tcx> + 'a {

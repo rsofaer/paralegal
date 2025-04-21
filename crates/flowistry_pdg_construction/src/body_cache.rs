@@ -112,6 +112,7 @@ impl<'tcx> BodyCache<'tcx> {
     ///
     /// Returns `None` if the policy forbids loading from this crate.
     pub fn get(&self, key: DefId) -> &'tcx CachedBody<'tcx> {
+        println!("{:?}", key);
         let body = if let Some(local) = key.as_local() {
             self.local_cache.get(&local.local_def_index, |_| {
                 let start = Instant::now();
@@ -206,6 +207,7 @@ pub fn dump_mir_and_borrowck_facts<'tcx>(tcx: TyCtxt<'tcx>) -> (Duration, Durati
         .iter()
         .map(|local_def_id| {
             let to_write = CachedBody::retrieve(tcx, *local_def_id);
+            println!("{:?}, {:?}", local_def_id, local_def_id.local_def_index);
 
             (local_def_id.local_def_index, to_write)
         })
@@ -226,10 +228,12 @@ pub fn local_or_remote_paths(krate: CrateNum, tcx: TyCtxt, ext: &str) -> Vec<Pat
     if krate == LOCAL_CRATE {
         vec![intermediate_out_dir(tcx, ext)]
     } else {
-        tcx.crate_extern_paths(krate)
+        let mut result: Vec<PathBuf> = tcx.crate_extern_paths(krate)
             .iter()
             .map(|p| p.with_extension(ext))
-            .collect()
+            .collect();
+        result.push(intermediate_out_dir(tcx, ext));
+        result
     }
 }
 
